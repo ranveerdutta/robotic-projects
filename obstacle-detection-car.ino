@@ -1,6 +1,5 @@
 #include <WiFiS3.h>
 #include <WiFiServer.h>
-#include <Servo.h>
 
 // Wi-Fi Access Point credentials
 char ssid[] = "ArduinoCar";     
@@ -17,16 +16,26 @@ const int IN3 = 9;
 const int IN4 = 10;
 
 
+//IR
+const int FWD_IR = A0;
+const int BACK_IR = A1;
+const int IR_VAL_THRESHOLD = 500;
+
+
 // Ultrasonic sensor pins
 const int trigPin = 2;
 const int echoPin = 3;
 unsigned long lastDistanceCheck = 0;
-const int distanceInterval = 200; // ms
+const unsigned long distanceInterval = 100; // check every 100 ms
+const int obstacleThreshold = 20; // in cm
 
+enum CarState {
+  NOT_MOVING,
+  MOVING_FORWARD,
+  MOVING_BACKWARD
+};
 
-// Safety flag
-bool blocked = false;
-
+CarState currentState = NOT_MOVING;
 
 
 void setup() {
@@ -42,6 +51,8 @@ void setup() {
   pinMode(IN4, OUTPUT);
   pinMode(trigPin, OUTPUT);
   pinMode(echoPin, INPUT);
+  pinMode(FWD_IR, INPUT);
+  pinMode(BACK_IR, INPUT);
 
 
   // Start Wi-Fi Access Point
@@ -59,9 +70,12 @@ void setup() {
 }
 
 void loop() {
+  if(currentState != NOT_MOVING){
+    checkFloorDrop();
+    checkObstacle();
+  }
+    
   handleClient();
-  checkObstacle();
-
 }
 
 void handleClient() {
@@ -104,7 +118,7 @@ void handleClient() {
     client.println("<div class='controller'>");
     // Top row - Forward
     client.println("<div></div>");
-    client.println("<a href='/F'><button class='btn forward'>Forward</button></a>");
+    client.println("<a href='/F'><button class='btn forward'>Fwd</button></a>");
     client.println("<div></div>");
 
     // Middle row - Left, Stop, Right
@@ -114,7 +128,7 @@ void handleClient() {
 
     // Bottom row - Backward
     client.println("<div></div>");
-    client.println("<a href='/B'><button class='btn backward'>Backward</button></a>");
+    client.println("<a href='/B'><button class='btn backward'>Back</button></a>");
     client.println("<div></div>");
     client.println("</div>");
 
@@ -123,8 +137,6 @@ void handleClient() {
     client.println("<a href='/LR'><button class='btn rotate'>Left Rotate</button></a>");
     client.println("<a href='/RR'><button class='btn rotate'>Right Rotate</button></a>");
     client.println("</div>");
-
-    if (blocked) client.println("<p style='color: red; font-weight: bold;'>⚠ Obstacle Detected!</p>");
 
     client.println("</body></html>");
 
@@ -140,29 +152,49 @@ void checkObstacle() {
   if (now - lastDistanceCheck < distanceInterval) return;
   lastDistanceCheck = now;
 
+  long distance = getDistance();
+
+  // Consider -1 as invalid reading (timeout)
+  if (distance != -1 && distance <= obstacleThreshold) {
+    stopMotors();
+  }
+}
+
+long getDistance() {
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
+
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
 
-  long duration = pulseIn(echoPin, HIGH, 20000);
-  int distance = duration * 0.034 / 2;
+  long duration = pulseIn(echoPin, HIGH, 20000); // 20ms timeout = ~3.4m
+  if (duration == 0) return -1; // timeout or no echo
 
-  if (distance > 0 && distance <= 10) {
-    blocked = true;
-    stopMotors();
-  } else {
-    blocked = false;
-  }
+  long distance = duration * 0.034 / 2;
+  return distance;
 }
 
+void checkFloorDrop() {
+
+  int fwdVal = analogRead(FWD_IR);
+  int backtVal = analogRead(BACK_IR);
+
+  if(currentState == MOVING_FORWARD && fwdVal > IR_VAL_THRESHOLD){
+    stopMotors();
+  }else if(currentState == MOVING_BACKWARD && backtVal > IR_VAL_THRESHOLD){
+    stopMotors();
+  }
+}
 
 // Movement functions
 void moveBackward() {
 
   analogWrite(ENA, 255);
   analogWrite(ENB, 255);
+
+  currentState = MOVING_BACKWARD;
+
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
   digitalWrite(IN3, HIGH);
@@ -174,6 +206,9 @@ void moveForward() {
 
   analogWrite(ENA, 255);
   analogWrite(ENB, 255);
+
+  currentState = MOVING_FORWARD;
+
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
   digitalWrite(IN3, LOW);
@@ -189,7 +224,6 @@ void turnLeft() {
   int valIN2 = digitalRead(IN2);
   int valIN3 = digitalRead(IN3);
   int valIN4 = digitalRead(IN4);
-  
 
   analogWrite(ENA, 255);
   analogWrite(ENB, 255);
@@ -217,7 +251,6 @@ void turnRight() {
   int valIN2 = digitalRead(IN2);
   int valIN3 = digitalRead(IN3);
   int valIN4 = digitalRead(IN4);
-
   
   analogWrite(ENA, 255);
   analogWrite(ENB, 255);
@@ -240,6 +273,8 @@ void turnRight() {
 
 void rotateLeft() {
 
+  currentState = NOT_MOVING;
+
   analogWrite(ENA, 180);
   analogWrite(ENB, 180);
   digitalWrite(IN1, LOW);
@@ -250,6 +285,8 @@ void rotateLeft() {
 }
 
 void rotateRight() {
+
+  currentState = NOT_MOVING;
 
   analogWrite(ENA, 180);
   analogWrite(ENB, 180);
@@ -264,10 +301,12 @@ void stopMotors() {
 
   analogWrite(ENA, 0);
   analogWrite(ENB, 0);
+
+  currentState = NOT_MOVING;
+
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
   
 }
-
