@@ -7,6 +7,58 @@ char pass[] = "12345678";
 
 WiFiServer server(80);
 
+const char htmlPage[] = R"rawliteral(
+    <!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>
+    <style>
+    body { font-family: Arial, sans-serif; background: #111; color: white; margin: 0; text-align: center; }
+    h1 { background: #222; padding: 15px; margin: 0; }
+    .controller { display: grid; grid-template-columns: 1fr 1fr 1fr; grid-gap: 10px; padding: 20px; max-width: 400px; margin: auto; }
+    .row { display: flex; justify-content: center; margin-bottom: 10px; }
+    .btn { width: 70px; height: 70px; font-size: 20px; font-weight: bold; border: none; border-radius: 15px; margin: 5px; cursor: pointer; transition: 0.2s; }
+    .btn:active { transform: scale(0.95); }
+    .forward { background: #4CAF50; }
+    .backward { background: #555; }
+    .left { background: #2196F3; }
+    .right { background: #2196F3; }
+    .stop { background: #f44336; }
+    .rotate { background: #FF9800; }
+    .sweep { background: #9C27B0; }
+    </style></head><body>
+    <h1>WIFI RC Car Controller</h1>
+    <div class='controller'>
+    <div></div>
+    <button class='btn forward' onclick="sendCommand('F')">Fwd</button>
+    <div></div>
+
+    <button class='btn left' onclick="sendCommand('L')">Left</button>
+    <button class='btn stop' onclick="sendCommand('S')">Stop</button>
+    <button class='btn right' onclick="sendCommand('R')">Right</button>
+
+    <div></div>
+    <button class='btn backward' onclick="sendCommand('B')">Back</button>
+    <div></div>
+    </div>
+
+    <div class='row'>
+    <button class='btn rotate' onclick="sendCommand('LR')">Left Rotate</button>
+    <button class='btn rotate' onclick="sendCommand('RR')">Right Rotate</button>
+    </div>
+
+    <div class='row'>
+    <button class='btn stop' onclick="sendCommand('FD')">Fwd Drop</button>
+    <button class='btn stop' onclick="sendCommand('BD')">Back Drop</button>
+    </div>
+
+    <script>
+      function sendCommand(cmd) {
+        fetch(`/${cmd}`).catch(err => console.log("Error sending command:", err));
+      }
+    </script>
+
+    </body></html>
+
+    )rawliteral";
+
 // Motor driver pins (adjust as per your wiring)
 const int ENA = 5;   // PWM - Left wheels
 const int ENB = 6;   // PWM - Right wheels
@@ -16,18 +68,22 @@ const int IN3 = 9;
 const int IN4 = 10;
 
 
-//IR
-const int FWD_IR = A0;
-const int BACK_IR = A1;
-const int IR_VAL_THRESHOLD = 500;
+//IR Pins
+const int FWD_IR = 12;
+const int BACK_IR = 2;
 
 
 // Ultrasonic sensor pins
-const int trigPin = 2;
-const int echoPin = 3;
+const int trigPin = 3;
+const int echoPin = 4;
 unsigned long lastDistanceCheck = 0;
 const unsigned long distanceInterval = 100; // check every 100 ms
 const int obstacleThreshold = 20; // in cm
+
+//speed
+const int MAX_SPEED = 255;
+const int BASE_SPEED = 180;
+const int SLOW_SPEED = 100;
 
 enum CarState {
   NOT_MOVING,
@@ -70,10 +126,10 @@ void setup() {
 }
 
 void loop() {
-  if(currentState != NOT_MOVING){
-    checkFloorDrop();
-    checkObstacle();
-  }
+  if(currentState != NOT_MOVING) checkFloorDrop();
+    
+  if(currentState == MOVING_FORWARD) checkObstacle();
+  
     
   handleClient();
 }
@@ -81,71 +137,30 @@ void loop() {
 void handleClient() {
   WiFiClient client = server.available();
   if (client) {
-    Serial.println("Client connected");
     String request = client.readStringUntil('\r');
     client.flush();
-    Serial.println(request);
 
-    if (request.indexOf("GET /F") >= 0) moveForward();
-    else if (request.indexOf("GET /B") >= 0) moveBackward();
+    if (request.indexOf("GET /FD") >= 0) moveForwardDetect();
+    else if (request.indexOf("GET /BD") >= 0) moveBackwardDetect();
     else if (request.indexOf("GET /LR") >= 0) rotateLeft();
     else if (request.indexOf("GET /RR") >= 0) rotateRight();
+    else if (request.indexOf("GET /F") >= 0) moveForward();
+    else if (request.indexOf("GET /B") >= 0) moveBackward();
     else if (request.indexOf("GET /L") >= 0) turnLeft();
     else if (request.indexOf("GET /R") >= 0) turnRight();
     else if (request.indexOf("GET /S") >= 0) stopMotors();
+    else {
+      client.println("HTTP/1.1 200 OK");
+      client.println("Content-Type: text/html");
+      client.println();
+      client.println(htmlPage);
+    }
 
-    client.println("HTTP/1.1 200 OK");
-    client.println("Content-Type: text/html");
-    client.println();
-    client.println("<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>");
-    client.println("<style>");
-    client.println("body { font-family: Arial, sans-serif; background: #111; color: white; margin: 0; text-align: center; }");
-    client.println("h1 { background: #222; padding: 15px; margin: 0; }");
-    client.println(".controller { display: grid; grid-template-columns: 1fr 1fr 1fr; grid-gap: 10px; padding: 20px; max-width: 400px; margin: auto; }");
-    client.println(".row { display: flex; justify-content: center; margin-bottom: 10px; }");
-    client.println(".btn { width: 70px; height: 70px; font-size: 20px; font-weight: bold; border: none; border-radius: 15px; margin: 5px; cursor: pointer; transition: 0.2s; }");
-    client.println(".btn:active { transform: scale(0.95); }");
-    client.println(".forward { background: #4CAF50; }");
-    client.println(".backward { background: #555; }");
-    client.println(".left { background: #2196F3; }");
-    client.println(".right { background: #2196F3; }");
-    client.println(".stop { background: #f44336; }");
-    client.println(".rotate { background: #FF9800; }");
-    client.println(".sweep { background: #9C27B0; }");
-    client.println("</style></head><body>");
-    client.println("<h1>WIFI RC Car Controller</h1>");
-
-    client.println("<div class='controller'>");
-    // Top row - Forward
-    client.println("<div></div>");
-    client.println("<a href='/F'><button class='btn forward'>Fwd</button></a>");
-    client.println("<div></div>");
-
-    // Middle row - Left, Stop, Right
-    client.println("<a href='/L'><button class='btn left'>Left</button></a>");
-    client.println("<a href='/S'><button class='btn stop'>Stop</button></a>");
-    client.println("<a href='/R'><button class='btn right'>Right</button></a>");
-
-    // Bottom row - Backward
-    client.println("<div></div>");
-    client.println("<a href='/B'><button class='btn backward'>Back</button></a>");
-    client.println("<div></div>");
-    client.println("</div>");
-
-    // Action buttons row
-    client.println("<div class='row'>");
-    client.println("<a href='/LR'><button class='btn rotate'>Left Rotate</button></a>");
-    client.println("<a href='/RR'><button class='btn rotate'>Right Rotate</button></a>");
-    client.println("</div>");
-
-    client.println("</body></html>");
-
-
-    //delay(1);
     client.stop();
-    Serial.println("Client disconnected");
+   
   }
 }
+
 
 void checkObstacle() {
   unsigned long now = millis();
@@ -177,12 +192,12 @@ long getDistance() {
 
 void checkFloorDrop() {
 
-  int fwdVal = analogRead(FWD_IR);
-  int backtVal = analogRead(BACK_IR);
+  int fwdVal = digitalRead(FWD_IR);
+  int backtVal = digitalRead(BACK_IR);
 
-  if(currentState == MOVING_FORWARD && fwdVal > IR_VAL_THRESHOLD){
+  if(currentState == MOVING_FORWARD && fwdVal == HIGH){
     stopMotors();
-  }else if(currentState == MOVING_BACKWARD && backtVal > IR_VAL_THRESHOLD){
+  }else if(currentState == MOVING_BACKWARD && backtVal == HIGH){
     stopMotors();
   }
 }
@@ -190,8 +205,8 @@ void checkFloorDrop() {
 // Movement functions
 void moveBackward() {
 
-  analogWrite(ENA, 255);
-  analogWrite(ENB, 255);
+  analogWrite(ENA, MAX_SPEED);
+  analogWrite(ENB, MAX_SPEED);
 
   currentState = MOVING_BACKWARD;
 
@@ -204,8 +219,8 @@ void moveBackward() {
 
 void moveForward() {
 
-  analogWrite(ENA, 255);
-  analogWrite(ENB, 255);
+  analogWrite(ENA, MAX_SPEED);
+  analogWrite(ENB, MAX_SPEED);
 
   currentState = MOVING_FORWARD;
 
@@ -225,8 +240,8 @@ void turnLeft() {
   int valIN3 = digitalRead(IN3);
   int valIN4 = digitalRead(IN4);
 
-  analogWrite(ENA, 255);
-  analogWrite(ENB, 255);
+  analogWrite(ENA, MAX_SPEED);
+  analogWrite(ENB, MAX_SPEED);
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
   digitalWrite(IN3, HIGH);
@@ -235,8 +250,8 @@ void turnLeft() {
   delay(500);
 
   //resume previous state of motors
-  analogWrite(ENA, 255);
-  analogWrite(ENB, 255);
+  analogWrite(ENA, MAX_SPEED);
+  analogWrite(ENB, MAX_SPEED);
   digitalWrite(IN1, valIN1);
   digitalWrite(IN2, valIN2);
   digitalWrite(IN3, valIN3);
@@ -252,8 +267,8 @@ void turnRight() {
   int valIN3 = digitalRead(IN3);
   int valIN4 = digitalRead(IN4);
   
-  analogWrite(ENA, 255);
-  analogWrite(ENB, 255);
+  analogWrite(ENA, MAX_SPEED);
+  analogWrite(ENB, MAX_SPEED);
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW);
@@ -262,8 +277,8 @@ void turnRight() {
   delay(500);
 
   //resume previous state of motors
-  analogWrite(ENA, 255);
-  analogWrite(ENB, 255);
+  analogWrite(ENA, MAX_SPEED);
+  analogWrite(ENB, MAX_SPEED);
   digitalWrite(IN1, valIN1);
   digitalWrite(IN2, valIN2);
   digitalWrite(IN3, valIN3);
@@ -275,8 +290,8 @@ void rotateLeft() {
 
   currentState = NOT_MOVING;
 
-  analogWrite(ENA, 180);
-  analogWrite(ENB, 180);
+  analogWrite(ENA, BASE_SPEED);
+  analogWrite(ENB, BASE_SPEED);
   digitalWrite(IN1, LOW);
   digitalWrite(IN2, HIGH);
   digitalWrite(IN3, HIGH);
@@ -288,8 +303,8 @@ void rotateRight() {
 
   currentState = NOT_MOVING;
 
-  analogWrite(ENA, 180);
-  analogWrite(ENB, 180);
+  analogWrite(ENA, BASE_SPEED);
+  analogWrite(ENB, BASE_SPEED);
   digitalWrite(IN1, HIGH);
   digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW);
@@ -308,5 +323,34 @@ void stopMotors() {
   digitalWrite(IN2, LOW);
   digitalWrite(IN3, LOW);
   digitalWrite(IN4, LOW);
+  
+}
+
+// Movement functions
+void moveBackwardDetect() {
+
+  analogWrite(ENA, SLOW_SPEED);
+  analogWrite(ENB, SLOW_SPEED);
+
+  currentState = MOVING_BACKWARD;
+
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+  
+}
+
+void moveForwardDetect() {
+
+  analogWrite(ENA, SLOW_SPEED);
+  analogWrite(ENB, SLOW_SPEED);
+
+  currentState = MOVING_FORWARD;
+
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
   
 }
