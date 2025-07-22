@@ -73,12 +73,16 @@ const int FWD_IR = 12;
 const int BACK_IR = 2;
 
 
-// Ultrasonic sensor pins
-const int trigPin = 3;
-const int echoPin = 4;
+//FW Ultrasonic sensor pins
+const int fwdTrigPin = 3;
+const int fwdEchoPin = 4;
 unsigned long lastDistanceCheck = 0;
 const unsigned long distanceInterval = 100; // check every 100 ms
 const int obstacleThreshold = 20; // in cm
+
+
+//Buzzer pin
+int buzzerPin = 13;
 
 //speed
 const int MAX_SPEED = 255;
@@ -105,10 +109,15 @@ void setup() {
   pinMode(IN2, OUTPUT);
   pinMode(IN3, OUTPUT);
   pinMode(IN4, OUTPUT);
-  pinMode(trigPin, OUTPUT);
-  pinMode(echoPin, INPUT);
+
+  pinMode(fwdTrigPin, OUTPUT);
+  pinMode(fwdEchoPin, INPUT);
+
   pinMode(FWD_IR, INPUT);
   pinMode(BACK_IR, INPUT);
+
+  pinMode(buzzerPin, OUTPUT);
+  digitalWrite(buzzerPin, HIGH); // Assume active-low
 
 
   // Start Wi-Fi Access Point
@@ -172,18 +181,25 @@ void checkObstacle() {
   // Consider -1 as invalid reading (timeout)
   if (distance != -1 && distance <= obstacleThreshold) {
     stopMotors();
+    triggetBuzzer();
   }
 }
 
+void triggetBuzzer(){
+  digitalWrite(buzzerPin, LOW);  // ON (for active-low)
+  delay(500);
+  digitalWrite(buzzerPin, HIGH); // OFF
+}
+
 long getDistance() {
-  digitalWrite(trigPin, LOW);
+  digitalWrite(fwdTrigPin, LOW);
   delayMicroseconds(2);
 
-  digitalWrite(trigPin, HIGH);
+  digitalWrite(fwdTrigPin, HIGH);
   delayMicroseconds(10);
-  digitalWrite(trigPin, LOW);
+  digitalWrite(fwdTrigPin, LOW);
 
-  long duration = pulseIn(echoPin, HIGH, 20000); // 20ms timeout = ~3.4m
+  long duration = pulseIn(fwdEchoPin, HIGH, 20000); // 20ms timeout = ~3.4m
   if (duration == 0) return -1; // timeout or no echo
 
   long distance = duration * 0.034 / 2;
@@ -197,8 +213,10 @@ void checkFloorDrop() {
 
   if(currentState == MOVING_FORWARD && fwdVal == HIGH){
     stopMotors();
+    triggetBuzzer();
   }else if(currentState == MOVING_BACKWARD && backtVal == HIGH){
     stopMotors();
+    triggetBuzzer();
   }
 }
 
