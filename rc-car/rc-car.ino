@@ -67,6 +67,10 @@ const int IN2 = 8;
 const int IN3 = 9;
 const int IN4 = 10;
 
+//mode pins
+const int WIFI_MODE = A4;
+const int IR_REMOTE_MODE = A5;
+
 
 //IR Pins
 const int FWD_IR = 12;
@@ -99,8 +103,8 @@ CarState currentState = NOT_MOVING;
 
 
 void setup() {
+
   Serial.begin(9600);
-  while (!Serial);
 
   // Set motor pins as outputs
   pinMode(ENA, OUTPUT);
@@ -119,7 +123,21 @@ void setup() {
   pinMode(buzzerPin, OUTPUT);
   digitalWrite(buzzerPin, HIGH); // Assume active-low
 
+  //mode pins
+  pinMode(WIFI_MODE, INPUT);
+  pinMode(IR_REMOTE_MODE, INPUT);
 
+
+  //Serial.println(isWifiMode());
+  //Serial.println(isRemoteMode());
+
+  if(isWifiMode()){
+    setupServer();
+  }
+
+}
+
+void setupServer(){
   // Start Wi-Fi Access Point
   if (WiFi.beginAP(ssid, pass) != WL_AP_LISTENING) {
     Serial.println("Failed to start AP");
@@ -127,11 +145,7 @@ void setup() {
   }
 
   IPAddress ip = WiFi.localIP();
-  Serial.print("AP IP address: ");
-  Serial.println(ip);
-
   server.begin();
-
 }
 
 void loop() {
@@ -143,11 +157,21 @@ void loop() {
   handleClient();
 }
 
+bool isWifiMode(){
+  return digitalRead(WIFI_MODE) == HIGH;
+}
+
+bool isRemoteMode(){
+  return digitalRead(IR_REMOTE_MODE) == HIGH;
+}
+
 void handleClient() {
   WiFiClient client = server.available();
   if (client) {
     String request = client.readStringUntil('\r');
     client.flush();
+
+    client.println("HTTP/1.1 200 OK");
 
     if (request.indexOf("GET /FD") >= 0) moveForwardDetect();
     else if (request.indexOf("GET /BD") >= 0) moveBackwardDetect();
@@ -159,7 +183,6 @@ void handleClient() {
     else if (request.indexOf("GET /R") >= 0) turnRight();
     else if (request.indexOf("GET /S") >= 0) stopMotors();
     else {
-      client.println("HTTP/1.1 200 OK");
       client.println("Content-Type: text/html");
       client.println();
       client.println(htmlPage);
@@ -181,11 +204,11 @@ void checkObstacle() {
   // Consider -1 as invalid reading (timeout)
   if (distance != -1 && distance <= obstacleThreshold) {
     stopMotors();
-    triggetBuzzer();
+    triggerBuzzer();
   }
 }
 
-void triggetBuzzer(){
+void triggerBuzzer(){
   digitalWrite(buzzerPin, LOW);  // ON (for active-low)
   delay(500);
   digitalWrite(buzzerPin, HIGH); // OFF
@@ -213,10 +236,10 @@ void checkFloorDrop() {
 
   if(currentState == MOVING_FORWARD && fwdVal == HIGH){
     stopMotors();
-    triggetBuzzer();
+    triggerBuzzer();
   }else if(currentState == MOVING_BACKWARD && backtVal == HIGH){
     stopMotors();
-    triggetBuzzer();
+    triggerBuzzer();
   }
 }
 
