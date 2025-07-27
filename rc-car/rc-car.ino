@@ -80,9 +80,15 @@ const int BACK_IR = 2;
 //FW Ultrasonic sensor pins
 const int fwdTrigPin = 3;
 const int fwdEchoPin = 4;
-unsigned long lastDistanceCheck = 0;
-const unsigned long distanceInterval = 100; // check every 100 ms
-const int obstacleThreshold = 20; // in cm
+unsigned long lastDistanceCheckFwd = 0;
+const unsigned long distanceInterval = 500; // check every 500 ms
+const int obstacleThresholdFwd = 20; // in cm
+
+//BW Ultrasonic sensor pins
+const int bwdTrigPin = 11;
+const int bwdEchoPin = A3;
+unsigned long lastDistanceCheckBwd = 0;
+const int obstacleThresholdBwd = 30; // in cm
 
 
 //Buzzer pin
@@ -125,6 +131,9 @@ void setup() {
   pinMode(fwdTrigPin, OUTPUT);
   pinMode(fwdEchoPin, INPUT);
 
+  pinMode(bwdTrigPin, OUTPUT);
+  pinMode(bwdEchoPin, INPUT);
+
   pinMode(FWD_IR, INPUT);
   pinMode(BACK_IR, INPUT);
 
@@ -154,7 +163,8 @@ void loop() {
 
   if(currentState != NOT_MOVING) checkFloorDrop();
     
-  if(currentState == MOVING_FORWARD) checkObstacle();
+  if(currentState == MOVING_FORWARD) checkObstacle(obstacleThresholdFwd, lastDistanceCheckFwd, fwdTrigPin, fwdEchoPin);
+  else if(currentState == MOVING_BACKWARD) checkObstacle(obstacleThresholdBwd, lastDistanceCheckBwd, bwdTrigPin, bwdEchoPin);
   
     
   handleClient();
@@ -233,12 +243,12 @@ void handleClient() {
 }
 
 
-void checkObstacle() {
+void checkObstacle(int obstacleThreshold, int lastDistanceCheck, int trigPin, int echoPin) {
   unsigned long now = millis();
   if (now - lastDistanceCheck < distanceInterval) return;
   lastDistanceCheck = now;
 
-  long distance = getDistance();
+  long distance = getDistance(trigPin, echoPin);
 
   // Consider -1 as invalid reading (timeout)
   if (distance != -1 && distance <= obstacleThreshold) {
@@ -253,15 +263,15 @@ void triggerBuzzer(){
   digitalWrite(buzzerPin, HIGH); // OFF
 }
 
-long getDistance() {
-  digitalWrite(fwdTrigPin, LOW);
+long getDistance(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
 
-  digitalWrite(fwdTrigPin, HIGH);
+  digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
-  digitalWrite(fwdTrigPin, LOW);
+  digitalWrite(trigPin, LOW);
 
-  long duration = pulseIn(fwdEchoPin, HIGH, 20000); // 20ms timeout = ~3.4m
+  long duration = pulseIn(echoPin, HIGH, 20000); // 20ms timeout = ~3.4m
   if (duration == 0) return -1; // timeout or no echo
 
   long distance = duration * 0.034 / 2;
