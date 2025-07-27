@@ -68,8 +68,8 @@ const int IN3 = 9;
 const int IN4 = 10;
 
 //mode pins
-const int WIFI_MODE = A4;
-const int IR_REMOTE_MODE = A5;
+const int MODE_PIN_1 = A4;
+const int MODE_PIN_2 = A5;
 
 
 //IR Pins
@@ -91,15 +91,23 @@ int buzzerPin = 13;
 //speed
 const int MAX_SPEED = 255;
 const int BASE_SPEED = 180;
-const int SLOW_SPEED = 100;
+const int SLOW_SPEED = 80;
 
 enum CarState {
   NOT_MOVING,
   MOVING_FORWARD,
   MOVING_BACKWARD
 };
-
 CarState currentState = NOT_MOVING;
+
+enum InputMode {
+  WIFI,
+  IR_REMOTE,
+  NONE
+};
+
+InputMode currMode = NONE;
+unsigned long lastModeCheck = 0;
 
 
 void setup() {
@@ -124,16 +132,8 @@ void setup() {
   digitalWrite(buzzerPin, HIGH); // Assume active-low
 
   //mode pins
-  pinMode(WIFI_MODE, INPUT);
-  pinMode(IR_REMOTE_MODE, INPUT);
-
-
-  //Serial.println(isWifiMode());
-  //Serial.println(isRemoteMode());
-
-  if(isWifiMode()){
-    setupServer();
-  }
+  pinMode(MODE_PIN_1, INPUT);
+  pinMode(MODE_PIN_2, INPUT);
 
 }
 
@@ -149,6 +149,9 @@ void setupServer(){
 }
 
 void loop() {
+  
+  checkAndSetupInputMode();
+
   if(currentState != NOT_MOVING) checkFloorDrop();
     
   if(currentState == MOVING_FORWARD) checkObstacle();
@@ -157,12 +160,48 @@ void loop() {
   handleClient();
 }
 
+void checkAndSetupInputMode(){
+
+  unsigned long now = millis();
+  //check mode every 10 seconds
+  if (lastModeCheck > 0 && now - lastModeCheck < 10000) return;
+  lastModeCheck = now;
+  //Serial.println(currMode);
+  //Serial.println(isWifiMode());
+  //Serial.println(isRemoteMode());
+  //Serial.println("done");
+  if(isWifiMode() && currMode != WIFI){
+    //Serial.println("setting up wifi");
+    currMode = WIFI;
+    setupServer();
+  }else if(isRemoteMode() && currMode != IR_REMOTE){
+    //Serial.println("setting up remote");
+    if(currMode == WIFI){
+      server.end();
+      WiFi.end();
+      //Serial.println("cloosed wifi");
+    }
+    currMode = IR_REMOTE;
+  }else if(isNoneMode() && currMode != NONE){
+    if(currMode == WIFI){
+      server.end();
+      WiFi.end();
+      //Serial.println("cloosed wifi");
+    }
+    currMode = NONE;
+  }
+}
+
 bool isWifiMode(){
-  return digitalRead(WIFI_MODE) == HIGH;
+  return digitalRead(MODE_PIN_1) == HIGH;
 }
 
 bool isRemoteMode(){
-  return digitalRead(IR_REMOTE_MODE) == HIGH;
+  return digitalRead(MODE_PIN_2) == HIGH;
+}
+
+bool isNoneMode(){
+  return digitalRead(MODE_PIN_1) == LOW && digitalRead(MODE_PIN_2) == LOW;
 }
 
 void handleClient() {
