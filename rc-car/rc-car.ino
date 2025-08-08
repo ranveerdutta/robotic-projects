@@ -1,5 +1,6 @@
 #include <WiFiS3.h>
 #include <WiFiServer.h>
+#include <IRremote.h>
 
 // Wi-Fi Access Point credentials
 char ssid[] = "ArduinoCar";     
@@ -74,7 +75,7 @@ const int MODE_PIN_2 = A5;
 
 //IR Pins
 const int FWD_IR = 12;
-const int BACK_IR = 2;
+const int BACK_IR = 13;
 
 
 //FW Ultrasonic sensor pins
@@ -82,17 +83,20 @@ const int fwdTrigPin = 3;
 const int fwdEchoPin = 4;
 unsigned long lastDistanceCheckFwd = 0;
 const unsigned long distanceInterval = 500; // check every 500 ms
-const int obstacleThresholdFwd = 20; // in cm
+const int obstacleThresholdFwd = 30; // in cm
+
+//IR Receiver
+const int IR_RECV_PIN = 2;
 
 //BW Ultrasonic sensor pins
 const int bwdTrigPin = 11;
 const int bwdEchoPin = A3;
 unsigned long lastDistanceCheckBwd = 0;
-const int obstacleThresholdBwd = 30; // in cm
+const int obstacleThresholdBwd = 40; // in cm
 
 
 //Buzzer pin
-int buzzerPin = 13;
+const int buzzerPin = A2;
 
 //speed
 const int MAX_SPEED = 255;
@@ -144,6 +148,10 @@ void setup() {
   pinMode(MODE_PIN_1, INPUT);
   pinMode(MODE_PIN_2, INPUT);
 
+  // Start the receiver
+  IrReceiver.begin(IR_RECV_PIN, ENABLE_LED_FEEDBACK);
+  Serial.println("ir initialized");
+
 }
 
 void setupServer(){
@@ -167,7 +175,8 @@ void loop() {
   else if(currentState == MOVING_BACKWARD) checkObstacle(obstacleThresholdBwd, lastDistanceCheckBwd, bwdTrigPin, bwdEchoPin);
   
     
-  handleClient();
+  if(currMode == WIFI) handleClient();
+  else if(currMode == IR_REMOTE) handleIRRemote();
 }
 
 void checkAndSetupInputMode(){
@@ -185,7 +194,7 @@ void checkAndSetupInputMode(){
     currMode = WIFI;
     setupServer();
   }else if(isRemoteMode() && currMode != IR_REMOTE){
-    //Serial.println("setting up remote");
+    Serial.println("setting up remote");
     if(currMode == WIFI){
       server.end();
       WiFi.end();
@@ -206,11 +215,11 @@ bool isWifiMode(){
   return digitalRead(MODE_PIN_1) == HIGH;
 }
 
-bool isRemoteMode(){
+bool isNoneMode(){
   return digitalRead(MODE_PIN_2) == HIGH;
 }
 
-bool isNoneMode(){
+bool isRemoteMode(){
   return digitalRead(MODE_PIN_1) == LOW && digitalRead(MODE_PIN_2) == LOW;
 }
 
@@ -242,8 +251,29 @@ void handleClient() {
   }
 }
 
+void handleIRRemote() {
+  if (IrReceiver.decode()) {
+    uint8_t command = IrReceiver.decodedIRData.command;
+    //Serial.print("IR Command: 0x");
+    //Serial.println(command, HEX);
 
-void checkObstacle(int obstacleThreshold, int lastDistanceCheck, int trigPin, int echoPin) {
+    switch (command) {
+      case 0x40: moveForward(); break;     // Up arrow
+      case 0x41: moveBackward(); break;    // Down arrow
+      case 0x7: turnLeft(); break;        // Left arrow
+      case 0x6: turnRight(); break;       // Right arrow
+      case 0x44: stopMotors(); break;      // OK button
+      case 0x3: rotateLeft(); break;      // - button
+      case 0x2: rotateRight(); break;     // + button
+      default: break;
+    }
+
+    IrReceiver.resume();
+}
+}
+
+
+void checkObstacle(int obstacleThreshold, unsigned long &lastDistanceCheck, int trigPin, int echoPin) {
   unsigned long now = millis();
   if (now - lastDistanceCheck < distanceInterval) return;
   lastDistanceCheck = now;
