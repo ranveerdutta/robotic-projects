@@ -150,7 +150,6 @@ void setup() {
 
   // Start the receiver
   IrReceiver.begin(IR_RECV_PIN, ENABLE_LED_FEEDBACK);
-  Serial.println("ir initialized");
 
 }
 
