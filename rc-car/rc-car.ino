@@ -8,6 +8,9 @@ char pass[] = "12345678";
 
 WiFiServer server(80);
 
+// VC02 Voice Module uses hardware Serial1 (D8/D9) at 9600 baud
+// Serial0 (USB) remains available for debugging at 115200 baud
+
 const char htmlPage[] = R"rawliteral(
     <!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>
     <style>
@@ -57,20 +60,20 @@ const char htmlPage[] = R"rawliteral(
     )rawliteral";
 
 // Motor driver pins (adjust as per your wiring)
-const int ENA = 5;   // PWM - Left wheels
-const int ENB = 6;   // PWM - Right wheels
+const int ENA = 5;    // PWM - Left wheels
+const int ENB = 6;    // PWM - Right wheels
 const int IN1 = 7;
-const int IN2 = 8;
-const int IN3 = 9;
+const int IN2 = 12;   // Moved from D8 to D12 (freed D8 for Serial1)
+const int IN3 = 13;   // Moved from D9 to D13 (freed D9 for Serial1)
 const int IN4 = 10;
 
 // Mode pins
-const int MODE_PIN_1 = A4;
-const int MODE_PIN_2 = A5;
+const int MODE_PIN_1 = A0;  // Moved from A4
+const int MODE_PIN_2 = A1;  // Moved from A5
 
-// IR Pins
-const int FWD_IR = 12;
-const int BACK_IR = 13;
+// IR Pins (floor drop detection)
+const int FWD_IR = A4;  // Moved from D12
+const int BACK_IR = A5; // Moved from D13
 
 // FW Ultrasonic sensor pins
 const int fwdTrigPin = 3;
@@ -106,6 +109,7 @@ CarState currentState = NOT_MOVING;
 enum InputMode {
   WIFI,
   IR_REMOTE,
+  VOICE,
   NONE
 };
 
@@ -132,6 +136,11 @@ int currentSpeed = MAX_SPEED;
 // Debounce
 const unsigned long debounceDelay = 50;
 unsigned long lastDebounceTime = 0;
+
+// VC02 voice command buffer
+String voiceBuffer = "";
+unsigned long lastVoiceChar = 0;
+const unsigned long voiceTimeout = 300; // ms to wait for next char before processing
 
 void setup() {
   Serial.begin(115200);
@@ -160,8 +169,10 @@ void setup() {
   pinMode(MODE_PIN_1, INPUT);
   pinMode(MODE_PIN_2, INPUT);
 
-  // Start the receiver
+  // Start the IR receiver
   IrReceiver.begin(IR_RECV_PIN, ENABLE_LED_FEEDBACK);
+
+  Serial.println("RC Car initialized. Waiting for mode selection...");
 }
 
 void setupServer() {
@@ -190,6 +201,7 @@ void loop() {
 
   if (currMode == WIFI) handleClient();
   else if (currMode == IR_REMOTE) handleIRRemote();
+  else if (currMode == VOICE) handleVoice();
 }
 
 void checkAndSetupInputMode() {
@@ -201,22 +213,42 @@ void checkAndSetupInputMode() {
   bool mode1 = readDebounced(MODE_PIN_1);
   bool mode2 = readDebounced(MODE_PIN_2);
 
-  if (mode1 && currMode != WIFI) {
-    currMode = WIFI;
+  InputMode newMode;
+  if (mode1 && mode2) {
+    newMode = VOICE;
+  } else if (mode1 && !mode2) {
+    newMode = WIFI;
+  } else if (!mode1 && !mode2) {
+    newMode = IR_REMOTE;
+  } else {
+    newMode = NONE;
+  }
+
+  if (newMode == currMode) return;
+
+  // Stopping previous mode
+  if (currMode == WIFI) {
+    server.end();
+    WiFi.end();
+  } else if (currMode == VOICE) {
+    Serial1.end();
+    voiceBuffer = "";
+  }
+
+  currMode = newMode;
+
+  // Starting new mode
+  if (currMode == WIFI) {
+    Serial.println("Mode: WiFi");
     setupServer();
-  } else if (!mode1 && !mode2 && currMode != IR_REMOTE) {
-    Serial.println("setting up remote");
-    if (currMode == WIFI) {
-      server.end();
-      WiFi.end();
-    }
-    currMode = IR_REMOTE;
-  } else if (mode2 && currMode != NONE) {
-    if (currMode == WIFI) {
-      server.end();
-      WiFi.end();
-    }
-    currMode = NONE;
+  } else if (currMode == IR_REMOTE) {
+    Serial.println("Mode: IR Remote");
+  } else if (currMode == VOICE) {
+    Serial.println("Mode: Voice (VC02)");
+    setupVoice();
+  } else {
+    Serial.println("Mode: None");
+    stopMotors();
   }
 }
 
@@ -295,6 +327,64 @@ void handleIRRemote() {
     }
 
     IrReceiver.resume();
+  }
+}
+
+// --- VC02 Voice Module ---
+void setupVoice() {
+  // Initialize hardware Serial1 for VC02 at 9600 baud
+  // Serial1 uses D8 (RX) and D9 (TX) — these are now free since IN2/IN3 moved
+  Serial1.begin(9600);
+}
+
+void handleVoice() {
+  // Read available characters from VC02 via Serial1
+  while (Serial1.available() > 0) {
+    char c = Serial1.read();
+    unsigned long now = millis();
+
+    // Ignore non-printable characters (newlines, carriage returns, etc.)
+    if (c >= 32) {
+      voiceBuffer += c;
+      lastVoiceChar = now;
+    }
+  }
+
+  // Process command if we've stopped receiving characters
+  unsigned long now = millis();
+  if (voiceBuffer.length() > 0 && now - lastVoiceChar >= voiceTimeout) {
+    String cmd = voiceBuffer.trim();
+    voiceBuffer = "";
+    processVoiceCommand(cmd);
+  }
+}
+
+void processVoiceCommand(String cmd) {
+  // Interrupt any active turn on new voice command
+  turnState = NO_TURN;
+
+  // VC02 echoes back the recognized command. Match against expected phrases.
+  // Use case-insensitive matching with indexOf.
+  String lower = cmd.toLowerCase();
+
+  if (lower.indexOf("forward") >= 0 && lower.indexOf("slow") < 0) {
+    moveForward();
+  } else if (lower.indexOf("back") >= 0 && lower.indexOf("slow") < 0) {
+    moveBackward();
+  } else if (lower.indexOf("turn left") >= 0) {
+    turnLeft();
+  } else if (lower.indexOf("turn right") >= 0) {
+    turnRight();
+  } else if (lower.indexOf("stop") >= 0) {
+    stopMotors();
+  } else if (lower.indexOf("rotate left") >= 0) {
+    rotateLeft();
+  } else if (lower.indexOf("rotate right") >= 0) {
+    rotateRight();
+  } else if (lower.indexOf("forward") >= 0 && lower.indexOf("slow") >= 0) {
+    moveForwardDetect();
+  } else if (lower.indexOf("back") >= 0 && lower.indexOf("slow") >= 0) {
+    moveBackwardDetect();
   }
 }
 
