@@ -27,17 +27,13 @@ const char htmlPage[] = R"rawliteral(
     </style></head><body>
     <h1>WIFI RC Car Controller</h1>
     <div class='controller'>
-    <div></div>
-    <button class='btn forward' onclick="sendCommand('F')">Fwd</button>
-    <div></div>
+    <button class='btn forward' style='grid-column: 2;' onclick="sendCommand('F')">Fwd</button>
 
     <button class='btn left' onclick="sendCommand('L')">Left</button>
     <button class='btn stop' onclick="sendCommand('S')">Stop</button>
     <button class='btn right' onclick="sendCommand('R')">Right</button>
 
-    <div></div>
-    <button class='btn backward' onclick="sendCommand('B')">Back</button>
-    <div></div>
+    <button class='btn backward' style='grid-column: 2;' onclick="sendCommand('B')">Back</button>
     </div>
 
     <div class='row'>
@@ -68,37 +64,34 @@ const int IN2 = 8;
 const int IN3 = 9;
 const int IN4 = 10;
 
-//mode pins
+// Mode pins
 const int MODE_PIN_1 = A4;
 const int MODE_PIN_2 = A5;
 
-
-//IR Pins
+// IR Pins
 const int FWD_IR = 12;
 const int BACK_IR = 13;
 
-
-//FW Ultrasonic sensor pins
+// FW Ultrasonic sensor pins
 const int fwdTrigPin = 3;
 const int fwdEchoPin = 4;
 unsigned long lastDistanceCheckFwd = 0;
 const unsigned long distanceInterval = 500; // check every 500 ms
 const int obstacleThresholdFwd = 30; // in cm
 
-//IR Receiver
+// IR Receiver
 const int IR_RECV_PIN = 2;
 
-//BW Ultrasonic sensor pins
+// BW Ultrasonic sensor pins
 const int bwdTrigPin = 11;
 const int bwdEchoPin = A3;
 unsigned long lastDistanceCheckBwd = 0;
 const int obstacleThresholdBwd = 40; // in cm
 
-
-//Buzzer pin
+// Buzzer pin
 const int buzzerPin = A2;
 
-//speed
+// Speed
 const int MAX_SPEED = 255;
 const int BASE_SPEED = 180;
 const int SLOW_SPEED = 80;
@@ -119,10 +112,29 @@ enum InputMode {
 InputMode currMode = NONE;
 unsigned long lastModeCheck = 0;
 
+// Non-blocking buzzer state
+unsigned long buzzerStartTime = 0;
+const unsigned long buzzerDuration = 500;
+
+// Non-blocking turn state
+enum TurnState {
+  NO_TURN,
+  TURNING_LEFT,
+  TURNING_RIGHT
+};
+TurnState turnState = NO_TURN;
+unsigned long turnStartTime = 0;
+const unsigned long turnDuration = 500;
+
+// Track current speed for recovery after detect commands
+int currentSpeed = MAX_SPEED;
+
+// Debounce
+const unsigned long debounceDelay = 50;
+unsigned long lastDebounceTime = 0;
 
 void setup() {
-
-  Serial.begin(9600);
+  Serial.begin(115200);
 
   // Set motor pins as outputs
   pinMode(ENA, OUTPUT);
@@ -144,16 +156,15 @@ void setup() {
   pinMode(buzzerPin, OUTPUT);
   digitalWrite(buzzerPin, HIGH); // Assume active-low
 
-  //mode pins
+  // Mode pins
   pinMode(MODE_PIN_1, INPUT);
   pinMode(MODE_PIN_2, INPUT);
 
   // Start the receiver
   IrReceiver.begin(IR_RECV_PIN, ENABLE_LED_FEEDBACK);
-
 }
 
-void setupServer(){
+void setupServer() {
   // Start Wi-Fi Access Point
   if (WiFi.beginAP(ssid, pass) != WL_AP_LISTENING) {
     Serial.println("Failed to start AP");
@@ -161,116 +172,131 @@ void setupServer(){
   }
 
   IPAddress ip = WiFi.localIP();
+  Serial.print("AP IP address: ");
+  Serial.println(ip);
   server.begin();
 }
 
 void loop() {
-  
   checkAndSetupInputMode();
 
-  if(currentState != NOT_MOVING) checkFloorDrop();
-    
-  if(currentState == MOVING_FORWARD) checkObstacle(obstacleThresholdFwd, lastDistanceCheckFwd, fwdTrigPin, fwdEchoPin);
-  else if(currentState == MOVING_BACKWARD) checkObstacle(obstacleThresholdBwd, lastDistanceCheckBwd, bwdTrigPin, bwdEchoPin);
-  
-    
-  if(currMode == WIFI) handleClient();
-  else if(currMode == IR_REMOTE) handleIRRemote();
+  checkTurn();
+  checkBuzzer();
+
+  if (currentState != NOT_MOVING) checkFloorDrop();
+
+  if (currentState == MOVING_FORWARD) checkObstacle(obstacleThresholdFwd, lastDistanceCheckFwd, fwdTrigPin, fwdEchoPin);
+  else if (currentState == MOVING_BACKWARD) checkObstacle(obstacleThresholdBwd, lastDistanceCheckBwd, bwdTrigPin, bwdEchoPin);
+
+  if (currMode == WIFI) handleClient();
+  else if (currMode == IR_REMOTE) handleIRRemote();
 }
 
-void checkAndSetupInputMode(){
-
+void checkAndSetupInputMode() {
   unsigned long now = millis();
-  //check mode every 10 seconds
+  // Check mode every 10 seconds
   if (lastModeCheck > 0 && now - lastModeCheck < 10000) return;
   lastModeCheck = now;
-  //Serial.println(currMode);
-  //Serial.println(isWifiMode());
-  //Serial.println(isRemoteMode());
-  //Serial.println("done");
-  if(isWifiMode() && currMode != WIFI){
-    //Serial.println("setting up wifi");
+
+  bool mode1 = readDebounced(MODE_PIN_1);
+  bool mode2 = readDebounced(MODE_PIN_2);
+
+  if (mode1 && currMode != WIFI) {
     currMode = WIFI;
     setupServer();
-  }else if(isRemoteMode() && currMode != IR_REMOTE){
+  } else if (!mode1 && !mode2 && currMode != IR_REMOTE) {
     Serial.println("setting up remote");
-    if(currMode == WIFI){
+    if (currMode == WIFI) {
       server.end();
       WiFi.end();
-      //Serial.println("cloosed wifi");
     }
     currMode = IR_REMOTE;
-  }else if(isNoneMode() && currMode != NONE){
-    if(currMode == WIFI){
+  } else if (mode2 && currMode != NONE) {
+    if (currMode == WIFI) {
       server.end();
       WiFi.end();
-      //Serial.println("cloosed wifi");
     }
     currMode = NONE;
   }
 }
 
-bool isWifiMode(){
-  return digitalRead(MODE_PIN_1) == HIGH;
-}
-
-bool isNoneMode(){
-  return digitalRead(MODE_PIN_2) == HIGH;
-}
-
-bool isRemoteMode(){
-  return digitalRead(MODE_PIN_1) == LOW && digitalRead(MODE_PIN_2) == LOW;
+bool readDebounced(int pin) {
+  unsigned long now = millis();
+  if (now - lastDebounceTime < debounceDelay) {
+    return digitalRead(pin);
+  }
+  lastDebounceTime = now;
+  // Sample multiple times with small delays for debounce
+  int readings[5];
+  for (int i = 0; i < 5; i++) {
+    readings[i] = digitalRead(pin);
+    delay(5);
+  }
+  // Majority vote
+  return (readings[0] + readings[1] + readings[2] + readings[3] + readings[4]) >= 3;
 }
 
 void handleClient() {
   WiFiClient client = server.available();
-  if (client) {
-    String request = client.readStringUntil('\r');
-    client.flush();
+  if (!client) return;
 
+  String request = client.readStringUntil('\r');
+  client.flush();
+
+  String responseBody = "OK";
+
+  if (request.indexOf("GET /FD") >= 0) moveForwardDetect();
+  else if (request.indexOf("GET /BD") >= 0) moveBackwardDetect();
+  else if (request.indexOf("GET /LR") >= 0) rotateLeft();
+  else if (request.indexOf("GET /RR") >= 0) rotateRight();
+  else if (request.indexOf("GET /F") >= 0) moveForward();
+  else if (request.indexOf("GET /B") >= 0) moveBackward();
+  else if (request.indexOf("GET /L") >= 0) turnLeft();
+  else if (request.indexOf("GET /R") >= 0) turnRight();
+  else if (request.indexOf("GET /S") >= 0) stopMotors();
+  else {
     client.println("HTTP/1.1 200 OK");
-
-    if (request.indexOf("GET /FD") >= 0) moveForwardDetect();
-    else if (request.indexOf("GET /BD") >= 0) moveBackwardDetect();
-    else if (request.indexOf("GET /LR") >= 0) rotateLeft();
-    else if (request.indexOf("GET /RR") >= 0) rotateRight();
-    else if (request.indexOf("GET /F") >= 0) moveForward();
-    else if (request.indexOf("GET /B") >= 0) moveBackward();
-    else if (request.indexOf("GET /L") >= 0) turnLeft();
-    else if (request.indexOf("GET /R") >= 0) turnRight();
-    else if (request.indexOf("GET /S") >= 0) stopMotors();
-    else {
-      client.println("Content-Type: text/html");
-      client.println();
-      client.println(htmlPage);
-    }
-
+    client.println("Content-Type: text/html");
+    client.println("Connection: close");
+    client.println();
+    client.println(htmlPage);
     client.stop();
-   
+    return;
   }
+
+  // Interrupt any active turn on new command
+  turnState = NO_TURN;
+
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: text/plain");
+  client.println("Content-Length: 2");
+  client.println("Connection: close");
+  client.println();
+  client.print(responseBody);
+  client.stop();
 }
 
 void handleIRRemote() {
   if (IrReceiver.decode()) {
     uint8_t command = IrReceiver.decodedIRData.command;
-    //Serial.print("IR Command: 0x");
-    //Serial.println(command, HEX);
+
+    // Interrupt any active turn on new IR command
+    turnState = NO_TURN;
 
     switch (command) {
       case 0x40: moveForward(); break;     // Up arrow
       case 0x41: moveBackward(); break;    // Down arrow
-      case 0x7: turnLeft(); break;        // Left arrow
-      case 0x6: turnRight(); break;       // Right arrow
+      case 0x7: turnLeft(); break;         // Left arrow
+      case 0x6: turnRight(); break;        // Right arrow
       case 0x44: stopMotors(); break;      // OK button
-      case 0x3: rotateLeft(); break;      // - button
-      case 0x2: rotateRight(); break;     // + button
+      case 0x3: rotateLeft(); break;       // - button
+      case 0x2: rotateRight(); break;      // + button
       default: break;
     }
 
     IrReceiver.resume();
+  }
 }
-}
-
 
 void checkObstacle(int obstacleThreshold, unsigned long &lastDistanceCheck, int trigPin, int echoPin) {
   unsigned long now = millis();
@@ -286,10 +312,24 @@ void checkObstacle(int obstacleThreshold, unsigned long &lastDistanceCheck, int 
   }
 }
 
-void triggerBuzzer(){
-  digitalWrite(buzzerPin, LOW);  // ON (for active-low)
-  delay(500);
-  digitalWrite(buzzerPin, HIGH); // OFF
+void triggerBuzzer() {
+  buzzerStartTime = millis();
+  digitalWrite(buzzerPin, LOW);  // ON (active-low)
+}
+
+void checkBuzzer() {
+  if (buzzerStartTime > 0 && millis() - buzzerStartTime >= buzzerDuration) {
+    digitalWrite(buzzerPin, HIGH); // OFF
+    buzzerStartTime = 0;
+  }
+}
+
+void checkTurn() {
+  if (turnState == NO_TURN) return;
+  if (millis() - turnStartTime >= turnDuration) {
+    stopMotors();
+    turnState = NO_TURN;
+  }
 }
 
 long getDistance(int trigPin, int echoPin) {
@@ -308,168 +348,98 @@ long getDistance(int trigPin, int echoPin) {
 }
 
 void checkFloorDrop() {
-
   int fwdVal = digitalRead(FWD_IR);
-  int backtVal = digitalRead(BACK_IR);
+  int backVal = digitalRead(BACK_IR);
 
-  if(currentState == MOVING_FORWARD && fwdVal == HIGH){
+  if (currentState == MOVING_FORWARD && fwdVal == HIGH) {
     stopMotors();
     triggerBuzzer();
-  }else if(currentState == MOVING_BACKWARD && backtVal == HIGH){
+  } else if (currentState == MOVING_BACKWARD && backVal == HIGH) {
     stopMotors();
     triggerBuzzer();
   }
 }
 
-// Movement functions
-void moveBackward() {
+// --- Motor control helper ---
+void setMotors(int leftSpeed, int rightSpeed) {
+  // leftSpeed/rightSpeed: positive = forward, negative = backward, 0 = stop
+  if (leftSpeed > 0) {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+  } else if (leftSpeed < 0) {
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+  } else {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+  }
 
-  analogWrite(ENA, MAX_SPEED);
-  analogWrite(ENB, MAX_SPEED);
+  if (rightSpeed > 0) {
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);
+  } else if (rightSpeed < 0) {
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);
+  } else {
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);
+  }
 
-  currentState = MOVING_BACKWARD;
-
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-  
+  analogWrite(ENA, abs(leftSpeed));
+  analogWrite(ENB, abs(rightSpeed));
 }
 
+// --- Movement functions ---
 void moveForward() {
-
-  analogWrite(ENA, MAX_SPEED);
-  analogWrite(ENB, MAX_SPEED);
-
+  currentSpeed = MAX_SPEED;
   currentState = MOVING_FORWARD;
+  setMotors(currentSpeed, currentSpeed);
+}
 
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-  
+void moveBackward() {
+  currentSpeed = MAX_SPEED;
+  currentState = MOVING_BACKWARD;
+  setMotors(-currentSpeed, -currentSpeed);
 }
 
 void turnLeft() {
-
-
-  //read current value
-  int valIN1 = digitalRead(IN1);
-  int valIN2 = digitalRead(IN2);
-  int valIN3 = digitalRead(IN3);
-  int valIN4 = digitalRead(IN4);
-
-  analogWrite(ENA, MAX_SPEED);
-  analogWrite(ENB, MAX_SPEED);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-
-  delay(500);
-
-  //resume previous state of motors
-  analogWrite(ENA, MAX_SPEED);
-  analogWrite(ENB, MAX_SPEED);
-  digitalWrite(IN1, valIN1);
-  digitalWrite(IN2, valIN2);
-  digitalWrite(IN3, valIN3);
-  digitalWrite(IN4, valIN4);
-
+  turnState = TURNING_LEFT;
+  turnStartTime = millis();
+  setMotors(-MAX_SPEED, MAX_SPEED);
 }
 
 void turnRight() {
-
-  //read current value
-  int valIN1 = digitalRead(IN1);
-  int valIN2 = digitalRead(IN2);
-  int valIN3 = digitalRead(IN3);
-  int valIN4 = digitalRead(IN4);
-  
-  analogWrite(ENA, MAX_SPEED);
-  analogWrite(ENB, MAX_SPEED);
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-
-  delay(500);
-
-  //resume previous state of motors
-  analogWrite(ENA, MAX_SPEED);
-  analogWrite(ENB, MAX_SPEED);
-  digitalWrite(IN1, valIN1);
-  digitalWrite(IN2, valIN2);
-  digitalWrite(IN3, valIN3);
-  digitalWrite(IN4, valIN4);
-
+  turnState = TURNING_RIGHT;
+  turnStartTime = millis();
+  setMotors(MAX_SPEED, -MAX_SPEED);
 }
 
 void rotateLeft() {
-
   currentState = NOT_MOVING;
-
-  analogWrite(ENA, BASE_SPEED);
-  analogWrite(ENB, BASE_SPEED);
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-  
+  currentSpeed = BASE_SPEED;
+  setMotors(-currentSpeed, currentSpeed);
 }
 
 void rotateRight() {
-
   currentState = NOT_MOVING;
-
-  analogWrite(ENA, BASE_SPEED);
-  analogWrite(ENB, BASE_SPEED);
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-
+  currentSpeed = BASE_SPEED;
+  setMotors(currentSpeed, -currentSpeed);
 }
 
 void stopMotors() {
-
-  analogWrite(ENA, 0);
-  analogWrite(ENB, 0);
-
   currentState = NOT_MOVING;
-
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, LOW);
-  
+  setMotors(0, 0);
 }
 
-// Movement functions
-void moveBackwardDetect() {
-
-  analogWrite(ENA, SLOW_SPEED);
-  analogWrite(ENB, SLOW_SPEED);
-
-  currentState = MOVING_BACKWARD;
-
-  digitalWrite(IN1, HIGH);
-  digitalWrite(IN2, LOW);
-  digitalWrite(IN3, HIGH);
-  digitalWrite(IN4, LOW);
-  
-}
-
+// --- Detect (slow) movement functions ---
 void moveForwardDetect() {
-
-  analogWrite(ENA, SLOW_SPEED);
-  analogWrite(ENB, SLOW_SPEED);
-
+  currentSpeed = SLOW_SPEED;
   currentState = MOVING_FORWARD;
+  setMotors(currentSpeed, currentSpeed);
+}
 
-  digitalWrite(IN1, LOW);
-  digitalWrite(IN2, HIGH);
-  digitalWrite(IN3, LOW);
-  digitalWrite(IN4, HIGH);
-  
+void moveBackwardDetect() {
+  currentSpeed = SLOW_SPEED;
+  currentState = MOVING_BACKWARD;
+  setMotors(-currentSpeed, -currentSpeed);
 }
